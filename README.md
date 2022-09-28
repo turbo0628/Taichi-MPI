@@ -43,8 +43,8 @@ mpirun -np 4 python 06-lbm-solver-mpi-faster-border.py
 
 If you cannot reproduce, file an issue in this repo, thanks!
 
-** Work under progress
+## Work in progress
 
-* I haven't tested any MPI4Py programs on supercomputing clusters, it might have problems with different envs.
-* Open MPI cannot properly work with the LBM demo, make sure to use MPICh at the moment.
+* I haven't tested any MPI4Py programs on supercomputing clusters, it might have problems with different envs. I need a cluster to test these programs.
+* Open MPI cannot properly work with the LBM demo, please make sure to use MPICH at the moment. (The conda version install MPICH automatically)
 * We are writing a tutorial to explain how to parallelize a stencil computation program written in Taichi with MPI4Py, stay tuned!
