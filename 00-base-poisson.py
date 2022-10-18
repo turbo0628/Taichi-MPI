@@ -5,7 +5,7 @@ import matplotlib.cm as cm
 
 ti.init(arch=ti.cpu,default_fp=ti.f64, offline_cache=False)
 
-N = 1024
+N = 1024 * 4
 
 x = ti.field(dtype=ti.f64, shape=(N + 2, N + 2))
 xt = ti.field(dtype=ti.f64, shape=(N + 2, N + 2))
@@ -37,7 +37,7 @@ def enforce_bc():
     pass
 
 @ti.kernel
-def iter():
+def substep():
     for i,j in ti.ndrange((1, N+1), (1, N+1)):
         xt[i,j] = (b[i,j] + x[i+1,j] + x[i-1,j] + x[i,j+1] + x[i,j-1]) / 4.0
     for I in ti.grouped(x):
@@ -57,7 +57,7 @@ init()
 while gui.running:
     st = time.time()
     enforce_bc()
-    iter()
+    substep()
     et = time.time()
     print(f"Pure compute FPS {1.0/(et - st)}", flush=True)
     # print(f"B after iter {i}\n", b)
@@ -65,6 +65,6 @@ while gui.running:
     # r = residual()
     # print(f'Residual = {r:4.2f}')
     x_np = x.to_numpy()
-    x_img = cm.jet(x_np[1:N+1, 1:N+1])
-    gui.set_image(x_img)
-    gui.show()
+    # x_img = cm.jet(x_np[1:N+1, 1:N+1])
+    # gui.set_image(x_img)
+    # gui.show()
