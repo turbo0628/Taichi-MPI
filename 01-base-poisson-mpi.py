@@ -10,7 +10,7 @@ import argparse
 @ti.data_oriented
 class PoissonSolver():
     def __init__(self, N = 1024, ti_data_type=ti.f64):
-        ti.init(arch=ti.gpu,default_fp=ti_data_type, offline_cache=False)
+        ti.init(arch=ti.gpu,default_fp=ti_data_type, offline_cache=False, device_memory_GB=6)
         self.N = N
         self.nw = 2 # num workers
         self.n = N // self.nw # frame edge length of the local field
@@ -122,32 +122,6 @@ def main(N = 1024, ti_data_type = ti.f64, show_gui=True, steps_interval=1):
             if comm.rank == 0:
                 print(f"Pure compute FPS {steps_interval/(et - st)}", flush=True)
         st = time.time()
-# def main(show_gui=True, steps_interval=1):
-#     x_np = None
-#     if show_gui and comm.rank == 0:
-#         x_np = np.empty((N, N))
-#         gui = ti.GUI('Poisson Solver', (N,N))
-
-#     init_fields(comm.rank)
-#     st = time.time()
-#     while True:
-#         for i in range(steps_interval):
-#             step()
-#         et = time.time()
-
-#         if comm.rank == 0 and show_gui and not gui.running:
-#             comm.Abort()
-
-#         if show_gui:
-#             mpi_gather_fields(x_np)
-#             if comm.rank == 0:
-#                 x_img = cm.jet(x_np)
-#                 gui.set_image(x_img)
-#                 gui.show()
-#         else:
-#             if comm.rank == 0:
-#                 print(f"Pure compute FPS {steps_interval/(et - st)}", flush=True)
-#         st = time.time()    
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Taichi + MPI Poisson solver demo')
