@@ -3,14 +3,19 @@ import math
 import time
 import matplotlib.cm as cm
 
-ti.init(arch=ti.cpu,default_fp=ti.f64, offline_cache=False)
 
-N = 1024 * 4
+N = 256
+show_gui = True
+steps = 50
+if show_gui:
+    steps = 1
+ti_data_type=ti.f64
 
-x = ti.field(dtype=ti.f64, shape=(N + 2, N + 2))
-xt = ti.field(dtype=ti.f64, shape=(N + 2, N + 2))
-b = ti.field(dtype=ti.f64, shape=(N + 2, N + 2))
-r = ti.field(dtype=ti.f64, shape=(N + 2, N + 2))
+ti.init(arch=ti.gpu,default_fp=ti_data_type, offline_cache=False, device_memory_GB=6, packed=True)
+
+x = ti.field(dtype=ti_data_type, shape=(N + 2, N + 2))
+xt = ti.field(dtype=ti_data_type, shape=(N + 2, N + 2))
+b = ti.field(dtype=ti_data_type, shape=(N + 2, N + 2))
 
 @ti.kernel
 def init():
@@ -30,7 +35,7 @@ def init():
         if j == N + 1:
             yl = 0.0
 
-        b[i,j] = 0.05 * ti.sin(math.pi * xl) * ti.sin(math.pi * yl)
+        b[i,j] = 0.5 * ti.sin(math.pi * xl) * ti.sin(math.pi * yl)
 
 @ti.kernel
 def enforce_bc():
@@ -51,20 +56,25 @@ def residual()->ti.f64:
         sum += r[i,j] ** 2
     return ti.sqrt(sum)
 
-gui = ti.GUI('Poisson Solver', (N,N))
+if show_gui:
+    gui = ti.GUI('Poisson Solver', (N,N))
 init()
 
-while gui.running:
-    st = time.time()
+st = time.time()
+i = 0
+while True:
     enforce_bc()
     substep()
-    et = time.time()
-    print(f"Pure compute FPS {1.0/(et - st)}", flush=True)
-    # print(f"B after iter {i}\n", b)
-    # print(f"X after iter {i}\n", x)
-    # r = residual()
-    # print(f'Residual = {r:4.2f}')
-    x_np = x.to_numpy()
-    # x_img = cm.jet(x_np[1:N+1, 1:N+1])
-    # gui.set_image(x_img)
-    # gui.show()
+    ti.sync()
+    if i % steps == 0:
+        et = time.time()
+        if show_gui:
+            x_np = x.to_numpy()
+            x_img = cm.jet(x_np[1:N+1, 1:N+1])
+            gui.set_image(x_img)
+            gui.show()
+        else:
+            print(f"Pure compute FPS {steps/(et - st)}", flush=True)
+        i = 0
+        st = time.time()    
+    i += 1
