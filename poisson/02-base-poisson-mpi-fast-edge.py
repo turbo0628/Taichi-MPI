@@ -9,7 +9,7 @@ import argparse
 @ti.data_oriented
 class PoissonSolver():
     def __init__(self, N = 1024, ti_data_type=ti.f64):
-        ti.init(arch=ti.gpu,default_fp=ti_data_type, offline_cache=False, device_memory_GB=6)
+        ti.init(arch=ti.gpu,default_fp=ti_data_type, offline_cache=False, device_memory_GB=6, packed=True)
         self.N = N
         self.nw = 2 # num workers
         self.n = N // self.nw # frame edge length of the local field
