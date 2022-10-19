@@ -2,13 +2,9 @@ import taichi as ti
 import math
 import time
 import matplotlib.cm as cm
+import argparse
 
-
-N = 256
-show_gui = True
-steps = 50
-if show_gui:
-    steps = 1
+N = 1024
 ti_data_type=ti.f64
 
 ti.init(arch=ti.gpu,default_fp=ti_data_type, offline_cache=False, device_memory_GB=6, packed=True)
@@ -38,10 +34,6 @@ def init():
         b[i,j] = 0.5 * ti.sin(math.pi * xl) * ti.sin(math.pi * yl)
 
 @ti.kernel
-def enforce_bc():
-    pass
-
-@ti.kernel
 def substep():
     for i,j in ti.ndrange((1, N+1), (1, N+1)):
         xt[i,j] = (b[i,j] + x[i+1,j] + x[i-1,j] + x[i,j+1] + x[i,j-1]) / 4.0
@@ -56,17 +48,18 @@ def residual()->ti.f64:
         sum += r[i,j] ** 2
     return ti.sqrt(sum)
 
-if show_gui:
-    gui = ti.GUI('Poisson Solver', (N,N))
-init()
-
-st = time.time()
-i = 0
-while True:
-    enforce_bc()
+def step():
     substep()
     ti.sync()
-    if i % steps == 0:
+    
+def main(show_gui=True, steps_interval=1):
+    if show_gui:
+        gui = ti.GUI('Poisson Solver', (N,N))
+    init()
+    st = time.time()
+    while True:
+        for i in range(steps_interval):
+            step()
         et = time.time()
         if show_gui:
             x_np = x.to_numpy()
@@ -74,7 +67,16 @@ while True:
             gui.set_image(x_img)
             gui.show()
         else:
-            print(f"Pure compute FPS {steps/(et - st)}", flush=True)
-        i = 0
+            print(f"Pure compute FPS {steps_interval/(et - st)}", flush=True)
         st = time.time()    
-    i += 1
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Taichi + MPI Poisson solver demo')
+    parser.add_argument('--benchmark', action='store_true')
+    args = parser.parse_args()
+    show_gui = True
+    steps_interval = 1
+    if args.benchmark:
+        show_gui = False
+        steps_interval = 50
+    main(show_gui, steps_interval)
