@@ -4,65 +4,58 @@ import time
 import matplotlib.cm as cm
 import argparse
 
-N = 1024
-ti_data_type=ti.f64
+@ti.data_oriented
+class PoissonSolver():
+    def __init__(self, N = 1024, ti_data_type=ti.f64):
+        ti.init(arch=ti.gpu,default_fp=ti_data_type, offline_cache=False, device_memory_GB=6, packed=True)
+        self.N = N
+        self.x = ti.field(dtype=ti_data_type, shape=(N + 2, N + 2))
+        self.xt = ti.field(dtype=ti_data_type, shape=(N + 2, N + 2))
+        self.b = ti.field(dtype=ti_data_type, shape=(N + 2, N + 2))
 
-ti.init(arch=ti.gpu,default_fp=ti_data_type, offline_cache=False, device_memory_GB=6, packed=True)
+    @ti.kernel
+    def init(self):
+        for I in ti.grouped(self.x):
+            self.x[I] = 0.0
+            self.xt[I] = 0.0
+        for i,j in self.b:
+            xl = i / self.N
+            yl = j / self.N
 
-x = ti.field(dtype=ti_data_type, shape=(N + 2, N + 2))
-xt = ti.field(dtype=ti_data_type, shape=(N + 2, N + 2))
-b = ti.field(dtype=ti_data_type, shape=(N + 2, N + 2))
+            if i == 0:
+                xl = 0.0
+            if i == self.N + 1:
+                xl = 0.0
+            if j == 0:
+                yl = 0.0
+            if j == self.N + 1:
+                yl = 0.0
 
-@ti.kernel
-def init():
-    for I in ti.grouped(x):
-        x[I] = 0.0
-        xt[I] = 0.0
-    for i,j in b:
-        xl = i / N
-        yl = j / N
+            self.b[i,j] = 0.5 * ti.sin(math.pi * xl) * ti.sin(math.pi * yl)
 
-        if i == 0:
-            xl = 0.0
-        if i == N + 1:
-            xl = 0.0
-        if j == 0:
-            yl = 0.0
-        if j == N + 1:
-            yl = 0.0
+    @ti.kernel
+    def substep(self):
+        for i,j in ti.ndrange((1, self.N+1), (1, self.N+1)):
+            self.xt[i,j] = (self.b[i,j] + self.x[i+1,j] + self.x[i-1,j] + self.x[i,j+1] + self.x[i,j-1]) / 4.0
+        for I in ti.grouped(self.x):
+            self.x[I] = self.xt[I]
 
-        b[i,j] = 0.5 * ti.sin(math.pi * xl) * ti.sin(math.pi * yl)
-
-@ti.kernel
-def substep():
-    for i,j in ti.ndrange((1, N+1), (1, N+1)):
-        xt[i,j] = (b[i,j] + x[i+1,j] + x[i-1,j] + x[i,j+1] + x[i,j-1]) / 4.0
-    for I in ti.grouped(x):
-        x[I] = xt[I]
-
-@ti.kernel
-def residual()->ti.f64:
-    sum = 0.0
-    for i,j in r:
-        r[i,j] = (4*x[i,j] - x[i-1,j] - x[i+1,j] - x[i,j-1] - x[i,j+1] - b[i,j])
-        sum += r[i,j] ** 2
-    return ti.sqrt(sum)
-
-def step():
-    substep()
-    ti.sync()
+    def step(self):
+        self.substep()
+        ti.sync()
     
-def main(show_gui=True, steps_interval=1):
+def main(N = 1024, ti_data_type=ti.f64, show_gui=True, steps_interval=1):
     if show_gui:
         gui = ti.GUI('Poisson Solver', (N,N))
-    init()
+    solver = PoissonSolver(N, ti_data_type)
+    solver.init()
     st = time.time()
     while True:
         for i in range(steps_interval):
-            step()
+            solver.step()
         et = time.time()
         if show_gui:
-            x_np = x.to_numpy()
+            x_np = solver.x.to_numpy()
             x_img = cm.jet(x_np[1:N+1, 1:N+1])
             gui.set_image(x_img)
             gui.show()
@@ -72,11 +65,17 @@ def main(show_gui=True, steps_interval=1):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Taichi + MPI Poisson solver demo')
+    parser.add_argument('-n', dest='N', type=int, default=1024)
+    parser.add_argument('--fp32',  action='store_true')
     parser.add_argument('--benchmark', action='store_true')
+
     args = parser.parse_args()
     show_gui = True
+    data_type = ti.f64
     steps_interval = 1
+    if args.fp32:
+        data_type = ti.f32
     if args.benchmark:
         show_gui = False
         steps_interval = 50
-    main(show_gui, steps_interval)
+    main(args.N, data_type, show_gui, steps_interval)
