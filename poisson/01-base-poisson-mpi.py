@@ -9,11 +9,13 @@ import argparse
 
 @ti.data_oriented
 class PoissonSolver():
-    def __init__(self, N = 1024, ti_data_type=ti.f64):
-        ti.init(arch=ti.gpu,default_fp=ti_data_type, offline_cache=False, device_memory_GB=6, packed=True)
+    def __init__(self, N = 1024, ti_arch=ti.gpu, ti_data_type=ti.f64):
+        ti.init(arch=ti_arch,default_fp=ti_data_type, offline_cache=False, device_memory_GB=6, packed=True)
+        self.comm = MPI.COMM_WORLD
         self.N = N
-        self.nw = 2 # num workers
+        self.nw = self.comm.size # num workers
         self.n = N // self.nw # frame edge length of the local field
+        assert(N % self.nw == 0)
         
         if ti_data_type == ti.f32:
             self.np_data_type = np.float32
@@ -21,9 +23,6 @@ class PoissonSolver():
             self.np_data_type = np.float64
         else:
             raise RuntimeError(f"Illegal data type {ti_data_type}")
-
-        self.comm = MPI.COMM_WORLD
-        assert(self.nw == self.comm.size)
 
         # Local fields in each MPI worker
         self.x  = ti.field(dtype=ti_data_type, shape=(self.N + 2, self.n + 2))
@@ -94,14 +93,14 @@ class PoissonSolver():
         self.substep()
         ti.sync()
 
-def main(N = 1024, ti_data_type = ti.f64, show_gui=True, steps_interval=1):
+def main(N, ti_arch, ti_data_type, show_gui, steps_interval):
     x_np = None
     comm = MPI.COMM_WORLD
     if show_gui and comm.rank == 0:
         x_np = np.empty((N, N))
         gui = ti.GUI('Poisson Solver', (N,N))
 
-    solver = PoissonSolver(N, ti_data_type)
+    solver = PoissonSolver(N, ti_arch, ti_data_type)
     solver.init_fields(comm.rank)
     st = time.time()
     while True:
@@ -128,14 +127,18 @@ if __name__ == '__main__':
     parser.add_argument('-n', dest='N', type=int, default=1024)
     parser.add_argument('--fp32',  action='store_true')
     parser.add_argument('--benchmark', action='store_true')
+    parser.add_argument('--cpu', action='store_true')
 
     args = parser.parse_args()
     show_gui = True
-    data_type = ti.f64
+    ti_arch = ti.gpu
+    if args.cpu:
+        ti_arch = ti.cpu
+    ti_data_type = ti.f64
     steps_interval = 1
     if args.fp32:
-        data_type = ti.f32
+        ti_data_type = ti.f32
     if args.benchmark:
         show_gui = False
         steps_interval = 50
-    main(args.N, data_type, show_gui, steps_interval)
+    main(args.N, ti_arch, ti_data_type, show_gui, steps_interval)
