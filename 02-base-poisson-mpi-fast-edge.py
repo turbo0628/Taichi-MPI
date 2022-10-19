@@ -4,173 +4,147 @@ import matplotlib.cm as cm
 from mpi4py import MPI
 import numpy as np
 import time
+import argparse
 
-ti_data_type=ti.f64
+@ti.data_oriented
+class PoissonSolver():
+    def __init__(self, N = 1024, ti_data_type=ti.f64):
+        ti.init(arch=ti.gpu,default_fp=ti_data_type, offline_cache=False, device_memory_GB=6)
+        self.N = N
+        self.nw = 2 # num workers
+        self.n = N // self.nw # frame edge length of the local field
+        
+        if ti_data_type == ti.f32:
+            self.np_data_type = np.float32
+        elif ti_data_type == ti.f64:
+            self.np_data_type = np.float64
+        else:
+            raise RuntimeError(f"Illegal data type {ti_data_type}")
 
-ti.init(arch=ti.cpu,default_fp=ti_data_type, offline_cache=False)
+        self.comm = MPI.COMM_WORLD
+        assert(self.nw == self.comm.size)
 
-N = 1024 # Local field edge size
-nw = 4 # num workers
-N_glo = N * nw # frame edge length of the entire field
+        # Local fields in each MPI worker
+        self.x  = ti.field(dtype=ti_data_type, shape=(self.N + 2, self.n + 2))
+        self.xt = ti.field(dtype=ti_data_type, shape=(self.N + 2, self.n + 2))
+        self.b  = ti.field(dtype=ti_data_type, shape=(self.N + 2, self.n + 2))
 
-comm = MPI.COMM_WORLD
-assert(nw == comm.size)
+        self.shadow_left = np.zeros((self.N + 2), dtype=self.np_data_type)
+        self.shadow_right = np.zeros((self.N + 2), dtype=self.np_data_type)
+        self.edge_left = np.zeros((N + 2), dtype=self.np_data_type)
+        self.edge_right = np.zeros((N + 2), dtype=self.np_data_type)
 
-# Local fields with halo edges
-x  = ti.field(dtype=ti_data_type, shape=(nw * N + 2, N + 2))
-xt = ti.field(dtype=ti_data_type, shape=(nw * N + 2, N + 2))
-b  = ti.field(dtype=ti_data_type, shape=(nw * N + 2, N + 2))
+    @ti.kernel
+    def extract_edge(self, edge_left : ti.types.ndarray(), edge_right : ti.types.ndarray()):
+        for i in ti.ndrange((0, self.N + 2)):
+            edge_left[i] = self.x[i, 1]
+            edge_right[i] = self.x[i, self.n]
 
-shadow_left = np.zeros((nw * N + 2))
-shadow_right = np.zeros((nw * N + 2))
-edge_left = np.zeros((nw * N + 2))
-edge_right = np.zeros((nw * N + 2))
+    @ti.kernel
+    def fill_shadow(self, shadow_left : ti.types.ndarray(), shadow_right : ti.types.ndarray()):
+        for i in ti.ndrange((0, self.N + 2)):
+            self.x[i, 0] = shadow_left[i]
+            self.x[i, self.n+1] = shadow_right[i]
 
-@ti.kernel
-def extract_edge(edge_left : ti.types.ndarray(), edge_right : ti.types.ndarray()):
-    for i in ti.ndrange((0, nw * N + 2)):
-        edge_left[i] = x[i, 1]
-        edge_right[i] = x[i, N]
+    def mpi_transfer_edges(self):
+        comm = self.comm
+        self.extract_edge(self.edge_left, self.edge_right)
+        if comm.rank > 0:
+            comm.Send(self.edge_left, dest=comm.rank-1)
 
-@ti.kernel
-def fill_shadow(shadow_left : ti.types.ndarray(), shadow_right : ti.types.ndarray()):
-    for i in ti.ndrange((0, nw * N + 2)):
-        x[i, 0] = shadow_left[i]
-        x[i, N+1] = shadow_right[i]
+        if comm.rank < self.nw - 1:
+            comm.Recv(self.shadow_right, source=comm.rank+1)
 
+        if comm.rank < self.nw - 1:
+            comm.Send(self.edge_right, dest=comm.rank+1)
 
-def mpi_transfer_edges():
-    extract_edge(edge_left, edge_right)
-    if comm.rank > 0:
-        comm.Send(edge_left, dest=comm.rank-1)
+        if comm.rank > 0:
+            comm.Recv(self.shadow_left, source=comm.rank-1)
 
-    if comm.rank < nw - 1:
-        comm.Recv(shadow_right, source=comm.rank+1)
+        # Update Taichi field
+        self.fill_shadow(self.shadow_left, self.shadow_right)
 
-    if comm.rank < nw - 1:
-        comm.Send(edge_right, dest=comm.rank+1)
+    def mpi_gather_fields(self, x_np):
+        gather_data = self.comm.gather(self.x.to_numpy(), root=0)
+        if self.comm.rank == 0:
+            for i, buf in enumerate(gather_data):
+                x_np[:, i * self.n : (i+1) * self.n] = buf[1 : self.N + 1, 1 : self.n + 1]
 
-    if comm.rank > 0:
-        comm.Recv(shadow_left, source=comm.rank-1)
+    @ti.kernel
+    def init_fields(self, rank : ti.i64):
+        for I in ti.grouped(self.x):
+            self.x[I] = 0.0
+            self.xt[I] = 0.0
+        for i,j in self.b:
+            xl = (i - 1) / self.N
+            yl = (j - 1 + rank * self.n) / self.N
 
-    # # Update Taichi field
-    fill_shadow(shadow_left, shadow_right)
+            if i == 0:
+                xl = 0.0
+            if i == self.N + 1:
+                yl = 0.0
+            if j == self.n + 1:
+                xl = 0.0
+            if j == 0:
+                yl = 0.0
 
-
-def mpi_send_edges():
-    req_left = None
-    req_right = None
-    extract_edge(edge_left, edge_right)
-    # x_arr = x.to_numpy()
-    # ti.sync()
-    # edge_left = np.ascontiguousarray(x_arr[:, 1])
-    if comm.rank > 0:
-        comm.Isend(edge_left, dest=comm.rank-1, tag=10)
-        req_left = comm.Irecv(shadow_left, source=comm.rank - 1, tag=11)
-
-    # edge_right = np.ascontiguousarray(x_arr[:, -2])
-    if comm.rank < nw - 1:
-        comm.Isend(edge_right, dest=comm.rank+1, tag=11)
-        req_right = comm.Irecv(shadow_right, source=comm.rank + 1, tag=10)
-
-    return req_left, req_right
-
-def mpi_recv_edges(req_left, req_right):
-    x_arr = x.to_numpy()
-    if comm.rank < nw - 1:
-        # comm.Irecv(shadow_right, source=comm.rank+1, tag=10).Wait()
-        req_right.Wait()
-        x_arr[:, -1] = shadow_right
-
-    if comm.rank > 0:
-        # comm.Irecv(shadow_left, source=comm.rank - 1, tag=11).Wait()
-        req_left.Wait()
-        x_arr[:, 0] = shadow_left
-    # # Update Taichi field
-    # x.from_numpy(x_arr)
-    fill_shadow(shadow_left, shadow_right)
-    ti.sync()
-
-def mpi_gather_fields(x_np):
-    gather_data = comm.gather(x.to_numpy(), root=0)
-    if comm.rank == 0:
-        for i, buf in enumerate(gather_data):
-            x_np[:, i * N : (i+1) * N] = buf[1 : nw * N + 1, 1 : N + 1]
-
-@ti.kernel
-def init_fields(rank : ti.i64):
-    for I in ti.grouped(x):
-        x[I] = 0.0
-        xt[I] = 0.0
-    for i,j in b:
-        xl = (i - 1) / (nw * N)
-        yl = (j - 1 + rank * N) / (nw * N)
-
-        if i == 0:
-            xl = 0.0
-        if i == nw * N + 1:
-            yl = 0.0
-        if j == N + 1:
-            xl = 0.0
-        if j == 0:
-            yl = 0.0
-
-        b[i,j] = 0.05 * ti.sin(math.pi * xl) * ti.sin(math.pi * yl)
+            self.b[i,j] = 0.05 * ti.sin(math.pi * xl) * ti.sin(math.pi * yl)
 
 
-@ti.kernel
-def substep():
-    for i,j in ti.ndrange((1, nw * N + 1), (1, N+1)):
-        xt[i,j] = (b[i,j] + x[i+1,j] + x[i-1,j] + x[i,j+1] + x[i,j-1]) / 4.0
-    for I in ti.grouped(x):
-        x[I] = xt[I]
+    @ti.kernel
+    def substep(self):
+        for i,j in ti.ndrange((1, self.N + 1), (1, self.n + 1)):
+            self.xt[i,j] = (self.b[i,j] + self.x[i+1,j] + self.x[i-1,j] + self.x[i,j+1] + self.x[i,j-1]) / 4.0
+        for I in ti.grouped(self.x):
+            self.x[I] = self.xt[I]
 
-@ti.kernel
-def substep_bulk():
-    for i,j in ti.ndrange((1, nw * N + 1), (2, N)):
-        xt[i,j] = (b[i,j] + x[i+1,j] + x[i-1,j] + x[i,j+1] + x[i,j-1]) / 4.0
+    def step(self):
+        self.mpi_transfer_edges()
+        self.substep()
+        ti.sync()
 
-@ti.kernel
-def substep_edge(shadow_left : ti.types.ndarray(), shadow_right : ti.types.ndarray()):
-    for i in ti.ndrange((1, nw * N + 1)):
-        xt[i,1] = (b[i,1] + x[i+1,1] + x[i-1,1] + x[i,2] + x[i, 0]) / 4.0
-        # xt[i,1] = (b[i,1] + x[i+1,1] + x[i-1,1] + x[i,2] + shadow_left[i]) / 4.0
-        xt[i,N] = (b[i,N] + x[i+1,N] + x[i-1,N] + x[i,N+1] + x[i,N-1]) / 4.0
-        # xt[i,N] = (b[i,N] + x[i+1,N] + x[i-1,N] + shadow_right[i] + x[i,N-1]) / 4.0
+def main(N = 1024, ti_data_type = ti.f64, show_gui=True, steps_interval=1):
+    x_np = None
+    comm = MPI.COMM_WORLD
+    if show_gui and comm.rank == 0:
+        x_np = np.empty((N, N))
+        gui = ti.GUI('Poisson Solver', (N,N))
 
-    # for i in ti.ndrange((1, nw * N + 1)):
-    
-    for I in ti.grouped(x):
-        x[I] = xt[I]
-
-x_np = None
-if comm.rank == 0:
-    x_np = np.empty((nw * N, nw * N))
-    gui = ti.GUI('Poisson Solver', (nw * N, nw * N))
-
-show_gui = False
-init_fields(comm.rank)
-i = 0
-while True:
+    solver = PoissonSolver(N, ti_data_type)
+    solver.init_fields(comm.rank)
     st = time.time()
-    # x_arr = x.to_numpy()
-    # x_arr = None
-    mpi_transfer_edges()
-    # rl, rr = mpi_send_edges()
-    substep_bulk()
-    # mpi_recv_edges(rl, rr)
-    substep_edge(shadow_left, shadow_right)
-    # substep()
-    ti.sync()
-    et = time.time()
-    if show_gui:
-        mpi_gather_fields(x_np)
-    if comm.rank == 0:
-        print(f"Pure compute FPS {1.0/(et - st)}", flush=True)
-        if not gui.running:
+    while True:
+        for i in range(steps_interval):
+            solver.step()
+        et = time.time()
+
+        if comm.rank == 0 and show_gui and not gui.running:
             comm.Abort()
-            break
+
         if show_gui:
-            x_img = cm.jet(x_np)
-            gui.set_image(x_img)
-            gui.show()
+            solver.mpi_gather_fields(x_np)
+            if comm.rank == 0:
+                x_img = cm.jet(x_np)
+                gui.set_image(x_img)
+                gui.show()
+        else:
+            if comm.rank == 0:
+                print(f"Pure compute FPS {steps_interval/(et - st)}", flush=True)
+        st = time.time()
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Taichi + MPI Poisson solver demo')
+    parser.add_argument('-n', dest='N', type=int, default=1024)
+    parser.add_argument('--fp32',  action='store_true')
+    parser.add_argument('--benchmark', action='store_true')
+
+    args = parser.parse_args()
+    show_gui = True
+    data_type = ti.f64
+    steps_interval = 1
+    if args.fp32:
+        data_type = ti.f32
+    if args.benchmark:
+        show_gui = False
+        steps_interval = 50
+    main(args.N, data_type, show_gui, steps_interval)
