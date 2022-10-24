@@ -13,6 +13,7 @@ class PoissonSolver():
         ti.init(arch=ti_arch, default_fp=ti_data_type, offline_cache=False, device_memory_GB=6, packed=True)
         self.comm = MPI.COMM_WORLD
         self.N = N
+        self.dx = 1.0 / (self.N + 1)
         self.nw = self.comm.size # num workers
         self.n = N // self.nw # frame edge length of the local field
         assert(N % self.nw == 0)
@@ -83,18 +84,18 @@ class PoissonSolver():
             if j == 0:
                 yl = 0.0
 
-            self.b[i,j] = 0.05 * ti.sin(math.pi * xl) * ti.sin(math.pi * yl)
+            self.b[i,j] = ti.sin(math.pi * xl) * ti.sin(math.pi * yl)
 
     @ti.kernel
     def substep_bulk(self):
         for i,j in ti.ndrange((1, self.N + 1), (2, self.n)):
-            self.xt[i,j] = (self.b[i,j] + self.x[i+1,j] + self.x[i-1,j] + self.x[i,j+1] + self.x[i,j-1]) / 4.0
+            self.xt[i,j] = (-self.b[i,j]*self.dx**2 + self.x[i+1,j] + self.x[i-1,j] + self.x[i,j+1] + self.x[i,j-1]) / 4.0
 
     @ti.kernel
     def substep_edge(self, shadow_left : ti.types.ndarray(), shadow_right : ti.types.ndarray()):
         for i in ti.ndrange((1, self.N + 1)):
-            self.xt[i,1] = (self.b[i,1] + self.x[i+1,1] + self.x[i-1,1] + self.x[i,2] + shadow_left[i]) / 4.0
-            self.xt[i,self.n] = (self.b[i,self.n] + self.x[i+1,self.n] + self.x[i-1,self.n] + shadow_right[i] + self.x[i,self.n-1]) / 4.0
+            self.xt[i,1] = (-self.b[i,1]*self.dx**2 + self.x[i+1,1] + self.x[i-1,1] + self.x[i,2] + shadow_left[i]) / 4.0
+            self.xt[i,self.n] = (-self.b[i,self.n]*self.dx**2 + self.x[i+1,self.n] + self.x[i-1,self.n] + shadow_right[i] + self.x[i,self.n-1]) / 4.0
         for I in ti.grouped(self.x):
             self.x[I] = self.xt[I]
     
@@ -126,7 +127,9 @@ def main(N, ti_arch, ti_data_type, show_gui, steps_interval):
         if show_gui:
             solver.mpi_gather_fields(x_np)
             if comm.rank == 0:
-                x_img = cm.jet(x_np)
+                x_min = np.min(x_np)
+                x_max = np.max(x_np)
+                x_img = cm.jet(abs(x_np / (x_max - x_min)))
                 gui.set_image(x_img)
                 gui.show()
         else:
