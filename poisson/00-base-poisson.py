@@ -48,9 +48,8 @@ def main(N = 1024, ti_data_type=ti.f64, show_gui=True, steps_interval=1):
         et = time.time()
         if show_gui:
             x_np = solver.x.to_numpy()
-            x_min = np.min(x_np)
-            x_max = np.max(x_np)
-            x_img = cm.jet(abs(x_np[1:N+1, 1:N+1] / (x_max - x_min))) # Normalize x_np to [0,1]
+            ratio = 2000.  # Adjust the field level for proper displaying
+            x_img = cm.jet(abs(x_np[1:N+1, 1:N+1] * ratio))
             gui.set_image(x_img)
             gui.show()
         else:

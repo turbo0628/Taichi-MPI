@@ -105,9 +105,8 @@ def main(N, ti_arch, ti_data_type, show_gui, steps_interval):
         if show_gui:
             solver.mpi_gather_fields(x_np)
             if comm.rank == 0:
-                x_min = np.min(x_np)
-                x_max = np.max(x_np)                
-                x_img = cm.jet(abs(x_np) / (x_max - x_min))
+                ratio = 2000.  # Adjust the field level for proper displaying
+                x_img = cm.jet(abs(x_np * ratio))
                 gui.set_image(x_img)
                 gui.show()
         else:
